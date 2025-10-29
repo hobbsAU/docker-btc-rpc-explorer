@@ -61,7 +61,12 @@ const crawlerBotUserAgentStrings = {
 	"moz": new RegExp("dotbot", "i"),
 	"semrush": new RegExp("SemrushBot", "i"),
 	"majestic": new RegExp("MJ12bot", "i"),
-	"python-requests": new RegExp("python-requests", "i")
+	"python-requests": new RegExp("python-requests", "i"),
+	"openai": new RegExp("OAI-SearchBot", "i"),
+	"unidentifiedCrawler": new RegExp("Test Certificate Info", "i"),
+	"amazon": new RegExp("amazonbot", "i"),
+	"bytedance": new RegExp("bytespider", "i"),
+	"scrapy": new RegExp("Scrapy", "i"),
 };
 
 const ipMemoryCache = {};
@@ -479,6 +484,7 @@ function summarizeDuration(duration, options={}) {
 	let stripZeroes = "stripZeroes" in options ? options.stripZeroes : true;
 	let shortenDurationNames = "shortenDurationNames" in options ? options.shortenDurationNames : true;
 	let outputCommas = "outputCommas" in options ? options.outputCommas : true;
+	let decimalPlaces = "decimalPlaces" in options ? options.decimalPlaces : 1;
 
 	//console.log(JSON.stringify(options) + " - " + oneElement + " - " + stripZeroes + " - " + shortenDurationNames + " - " + outputCommas);
 
@@ -491,7 +497,7 @@ function summarizeDuration(duration, options={}) {
 
 		for (let i = 0; i < parts.length; i++) {
 			if (parts[i] > 1) {
-				str = `${new Decimal(parts[i]).toDP(1)} ${partNames[i]}`;
+				str = `${new Decimal(parts[i]).toDP(decimalPlaces)} ${partNames[i]}`;
 
 				break;
 			}
@@ -871,7 +877,7 @@ function formatLargeNumber(n, decimalPlaces) {
 			let item = exponentScales[i];
 
 			let fraction = new Decimal(n / item.val);
-			if (fraction >= 1) {
+			if (Math.abs(fraction) >= 1) {
 				return [fraction.toDP(decimalPlaces), item];
 			}
 		}
@@ -891,7 +897,7 @@ function formatLargeNumberSignificant(n, significantDigits) {
 			let item = exponentScales[i];
 
 			let fraction = new Decimal(n / item.val);
-			if (fraction >= 1) {
+			if (Math.abs(fraction) >= 1) {
 				return [fraction.toDP(Math.max(0, significantDigits - `${Math.floor(fraction)}`.length)), item];
 			}
 		}
@@ -974,7 +980,7 @@ function logError(errorId, err, optionalUserData = {}, logStacktrace=true) {
 		};
 	}
 
-	if (optionalUserData && err.message) {
+	if (optionalUserData && err && err.message) {
 		optionalUserData.errorMsg = err.message;
 	}
 
@@ -1058,6 +1064,7 @@ function buildQrCodeUrl(str, results) {
 function outputTypeAbbreviation(outputType) {
 	const map = {
 		"pubkey": "P2PK",
+		"multisig": "P2MS",
 		"pubkeyhash": "P2PKH",
 		"scripthash": "P2SH",
 		"witness_v0_keyhash": "P2WPKH",
@@ -1078,6 +1085,7 @@ function outputTypeAbbreviation(outputType) {
 function outputTypeName(outputType) {
 	const map = {
 		"pubkey": "Pay to Public Key",
+		"multisig": "Pay to MultiSig",
 		"pubkeyhash": "Pay to Public Key Hash",
 		"scripthash": "Pay to Script Hash",
 		"witness_v0_keyhash": "Witness, v0 Key Hash",
@@ -1328,11 +1336,11 @@ function xpubChangeVersionBytes(xpub, targetFormat) {
 	// trim whitespace
 	xpub = xpub.trim();
 
-	let data = bs58check.decode(xpub);
+	let data = bs58check.default.decode(xpub);
 	data = data.slice(4);
 	data = Buffer.concat([Buffer.from(xpubPrefixes.get(targetFormat), 'hex'), data]);
 
-	return bs58check.encode(data);
+	return bs58check.default.encode(data);
 }
 
 // HD wallet addresses
@@ -1364,6 +1372,26 @@ function bip32Addresses(extPubkey, addressType, account, limit=10, offset=0) {
 	}
 
 	return addresses;
+}
+
+function expressRequestToJson(req) {
+	return {
+		method: req.method,
+		url: req.url,
+		headers: req.headers,
+		query: req.query,
+		params: req.params,
+		body: req.body,
+		cookies: req.cookies,
+		signedCookies: req.signedCookies,
+		ip: req.ip,
+		ips: req.ips,
+		protocol: req.protocol,
+		secure: req.secure,
+		originalUrl: req.originalUrl,
+		hostname: req.hostname,
+		baseUrl: req.baseUrl,
+	};
 }
 
 function difficultyAdjustmentEstimates(eraStartBlockHeader, currentBlockHeader) {
@@ -1454,7 +1482,8 @@ function nextHalvingEstimates(eraStartBlockHeader, currentBlockHeader, difficult
 		difficultyAdjustmentData = difficultyAdjustmentEstimates(eraStartBlockHeader, currentBlockHeader);
 	}
 
-	let currDifficultyEraTimeDifferential = (coinConfig.targetBlockTimeSeconds - difficultyAdjustmentData.timePerBlock) * difficultyAdjustmentData.blocksLeft;
+	let blockCountAffectedByCurrentDifficultyDelta = Math.min(difficultyAdjustmentData.blocksLeft, blocksUntilNextHalving);
+	let currDifficultyEraTimeDifferential = (coinConfig.targetBlockTimeSeconds - difficultyAdjustmentData.timePerBlock) * blockCountAffectedByCurrentDifficultyDelta;
 
 
 	let secondsUntilNextHalving = blocksUntilNextHalving * targetBlockTimeSeconds - currDifficultyEraTimeDifferential;
@@ -1601,6 +1630,31 @@ const perfLogNewItem = (tags) => {
 	};
 };
 
+function trackAppEvent(name, count=1, params=null) {
+	if (!global.appEventStats[name]) {
+		global.appEventStats[name] = {count:0};
+	}
+
+	global.appEventStats[name].count += count;
+	global.appEventStats[name].last = new Date();
+
+	if (params != null) {
+		if (global.appEventStats[name].params == null) {
+			global.appEventStats[name].params = {};
+		}
+
+		let props = objectProperties(params);
+
+		props.forEach(prop => {
+			if (global.appEventStats[name].params[`${prop}[${params[prop]}]`] == null) {
+				global.appEventStats[name].params[`${prop}[${params[prop]}]`] = {count: 0};
+			}
+
+			global.appEventStats[name].params[`${prop}[${params[prop]}]`].count += count;
+		});
+	}
+}
+
 module.exports = {
 	reflectPromise: reflectPromise,
 	redirectToConnectPageIfNeeded: redirectToConnectPageIfNeeded,
@@ -1663,5 +1717,7 @@ module.exports = {
 	awaitPromises: awaitPromises,
 	perfLogNewItem: perfLogNewItem,
 	perfLog: perfLog,
-	fileCache: fileCache
+	fileCache: fileCache,
+	expressRequestToJson: expressRequestToJson,
+	trackAppEvent: trackAppEvent
 };
